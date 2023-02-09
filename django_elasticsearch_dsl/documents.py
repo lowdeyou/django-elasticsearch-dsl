@@ -1,5 +1,6 @@
 from __future__ import unicode_literals
 
+import gc
 from collections import deque
 from fnmatch import fnmatch
 from functools import partial
@@ -53,6 +54,23 @@ model_field_class_to_field_class = {
 }
 
 
+def queryset_iterator(queryset, chunksize=1000):
+    """
+    Returns a QuerySet iterator that ensures only loading a maximum number of 
+    rows, determined by the chunksize parameter, at any point in time. This is 
+    done to optimize memory usage and keep Django from loading all rows and
+    causing memory to run out.
+    """
+    pk = 0
+    chunked_queryset = queryset.order_by('pk')[:chunksize]
+    while len(chunked_queryset) > 0:
+        for row in chunked_queryset:
+            pk = row.pk
+            yield row
+        chunked_queryset = queryset.filter(pk__gt=pk).order_by('pk')[:chunksize]
+        gc.collect()
+
+
 class DocType(DSLDocument):
     _prepared_fields = []
 
@@ -99,10 +117,7 @@ class DocType(DSLDocument):
         Build queryset (iterator) for use by indexing.
         """
         qs = self.get_queryset()
-        kwargs = {}
-        if DJANGO_VERSION >= (2,) and self.django.queryset_pagination:
-            kwargs = {'chunk_size': self.django.queryset_pagination}
-        return qs.iterator(**kwargs)
+        return queryset_iterator(qs, chunksize=self.django.queryset_pagination)
 
     def init_prepare(self):
         """
